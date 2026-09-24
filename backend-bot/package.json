@@ -1,0 +1,13 @@
+{
+  "name": "backend-bot",
+  "version": "1.0.0",
+  "description": "Engine de WhatsApp Bot para Agencia IA",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["whatsapp", "bot", "ai", "agencia"],
+  "author": "",
+  "license": "ISC"
+}
