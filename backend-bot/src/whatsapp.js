@@ -1,5 +1,5 @@
-// Módulo de Conexión a WhatsApp vía Baileys con Persistencia en BD y Debug de Mensajes
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+// Módulo de Conexión a WhatsApp vía Baileys con Persistencia en BD y Resiliencia de Eventos
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const path = require('path');
@@ -27,15 +27,29 @@ function extractMessageText(msg) {
  * Inicializa el Socket de WhatsApp con guardado automático en PostgreSQL y auto-respuesta
  */
 async function connectToWhatsApp() {
-  console.log("📱 [WhatsApp Engine] Inicializando sesión y conectando...");
+  console.log("📱 [WhatsApp Engine] Inicializando versión y sesión de Baileys...");
   
+  let version = [2, 3000, 1015901307];
+  try {
+    const vInfo = await fetchLatestBaileysVersion();
+    version = vInfo.version;
+    console.log(`ℹ️ [Baileys Version] Versión activa: v${version.join('.')} (Última versión: ${vInfo.isLatest})`);
+  } catch (e) {
+    console.log("ℹ️ [Baileys Version] Usando versión fallback estable.");
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
 
   const sock = makeWASocket({
+    version,
     auth: state,
     printQRInTerminal: false,
     logger,
-    browser: ["Agencia IA (Raspberry Pi 5)", "Chrome", "1.0.0"]
+    browser: ["Agencia IA (Raspberry Pi 5)", "Chrome", "1.0.0"],
+    syncFullHistory: false,
+    markOnlineOnConnect: true,
+    generateHighQualityLinkPreview: true,
+    getMessage: async () => ({ conversation: 'Bot Active' })
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -59,58 +73,52 @@ async function connectToWhatsApp() {
     }
   });
 
-  // Escucha y procesado de mensajes entrantes
+  // Escucha y procesado universal de mensajes entrantes
   sock.ev.on('messages.upsert', async (m) => {
-    // Log de diagnóstico para entender la estructura de cada evento entrante
-    console.log(`\n🔔 [Evento Upsert Recibido] Tipo: "${m.type}" | Cantidad de Mensajes: ${m.messages.length}`);
+    try {
+      console.log(`\n🔔 [Evento Upsert Recibido] Tipo: "${m.type}" | Cantidad de Mensajes: ${m.messages.length}`);
 
-    for (const msg of m.messages) {
-      const from = msg.key.remoteJid;
-      const isFromMe = msg.key.fromMe;
-      const pushName = msg.pushName || (isFromMe ? 'Tú (Mismo número)' : 'Prospecto WhatsApp');
-      const text = extractMessageText(msg);
+      for (const msg of m.messages) {
+        const from = msg.key.remoteJid;
+        const isFromMe = msg.key.fromMe;
+        const pushName = msg.pushName || (isFromMe ? 'Tú (Mismo número)' : 'Prospecto WhatsApp');
+        const text = extractMessageText(msg);
 
-      console.log(`💬 [Mensaje Detalle] De: ${pushName} (${from}) | Es de mí mismo: ${isFromMe} | Texto: "${text}"`);
+        console.log(`💬 [Mensaje Recibido] De: ${pushName} (${from}) | Es de mí mismo: ${isFromMe} | Texto: "${text}"`);
 
-      // Si no contiene texto legible (ej: notificación de estado o sticker), ignorar
-      if (!text) continue;
+        // Ignorar estados / historias o mensajes sin texto
+        if (!text || from === 'status@broadcast') continue;
 
-      // Si el mensaje viene de otro número (o si estás probando escribiendo desde el mismo número)
-      // Para permitir pruebas desde el mismo número conectado:
-      if (!isFromMe) {
-        console.log(`🚀 [Procesando Lead] De: ${pushName} (${from}) -> Guardando en BD...`);
+        if (!isFromMe) {
+          console.log(`🚀 [Procesando Lead] De: ${pushName} (${from}) -> Guardando en BD...`);
 
-        // 1. Guardar o actualizar lead en PostgreSQL
-        const lead = await saveOrGetLead(from, pushName);
-        if (lead) {
-          // 2. Guardar mensaje entrante del lead
-          await saveMessage(lead.id, 'LEAD', text);
-          console.log(`💾 [BD PostgreSQL] Lead #${lead.id} (${pushName}) y mensaje guardados.`);
+          const lead = await saveOrGetLead(from, pushName);
+          if (lead) {
+            await saveMessage(lead.id, 'LEAD', text);
+            console.log(`💾 [BD PostgreSQL] Lead #${lead.id} (${pushName}) y mensaje guardados.`);
 
-          // 3. Generar Respuesta Automática del Bot
-          let replyText = '';
+            let replyText = '';
+            const cleanText = text.trim().toLowerCase();
+            if (cleanText === '1' || cleanText.includes('servicio') || cleanText.includes('info')) {
+              replyText = `📌 *Servicios de nuestra Agencia IA*\n\n1. Asistentes Virtuales 24/7 por WhatsApp.\n2. Calificación automática de leads.\n3. Agendamiento automático de citas.\n\n¿Te gustaría ver una demostración interactiva? Responde con *2*.`;
+            } else if (cleanText === '2' || cleanText.includes('demo') || cleanText.includes('cita')) {
+              replyText = `📅 *Agendamiento de Citas*\n\n¡Excelente! Por favor indícanos tu nombre completo y la fecha/hora que te gustaría para tu demostración.`;
+            } else if (cleanText === '3' || cleanText.includes('asesor') || cleanText.includes('humano')) {
+              replyText = `👨‍💼 *Atención Personalizada*\n\nUn asesor humano ha sido notificado y se pondrá en contacto contigo en breve.`;
+            } else {
+              replyText = `¡Hola ${pushName}! 👋 Gracias por escribirnos.\n\nSoy el Asistente IA operando desde la Raspberry Pi 5.\n\n*Menú de Opciones:*\n1️⃣ Información de Servicios\n2️⃣ Agendar Demo / Cita\n3️⃣ Hablar con un Asesor\n\n_Escribe 1, 2 o 3 para continuar._`;
+            }
 
-          const cleanText = text.trim().toLowerCase();
-          if (cleanText === '1' || cleanText.includes('servicio') || cleanText.includes('info')) {
-            replyText = `📌 *Servicios de nuestra Agencia IA*\n\n1. Asistentes Virtuales 24/7 por WhatsApp.\n2. Calificación automática de leads.\n3. Agendamiento automático de citas.\n\n¿Te gustaría ver una demostración interactiva? Responde con *2*.`;
-          } else if (cleanText === '2' || cleanText.includes('demo') || cleanText.includes('cita')) {
-            replyText = `📅 *Agendamiento de Citas*\n\n¡Excelente! Por favor indícanos tu nombre completo y la fecha/hora que te gustaría para tu demostración.`;
-          } else if (cleanText === '3' || cleanText.includes('asesor') || cleanText.includes('humano')) {
-            replyText = `👨‍💼 *Atención Personalizada*\n\nUn asesor humano ha sido notificado y se pondrá en contacto contigo en breve.`;
-          } else {
-            replyText = `¡Hola ${pushName}! 👋 Gracias por escribirnos.\n\nSoy el Asistente IA operando desde la Raspberry Pi 5.\n\n*Menú de Opciones:*\n1️⃣ Información de Servicios\n2️⃣ Agendar Demo / Cita\n3️⃣ Hablar con un Asesor\n\n_Escribe 1, 2 o 3 para continuar._`;
+            await sock.sendMessage(from, { text: replyText });
+            await saveMessage(lead.id, 'BOT', replyText);
+            console.log(`🤖 [Auto-Respuesta] Enviada a ${from} y registrada en BD.`);
           }
-
-          // 4. Enviar respuesta por WhatsApp
-          await sock.sendMessage(from, { text: replyText });
-          
-          // 5. Registrar la respuesta del Bot en BD
-          await saveMessage(lead.id, 'BOT', replyText);
-          console.log(`🤖 [Auto-Respuesta] Enviada a ${from} y registrada en BD.`);
+        } else {
+          console.log(`ℹ️ [Mensaje de Salida] El mensaje fue enviado por ti mismo desde WhatsApp.`);
         }
-      } else {
-        console.log(`ℹ️ [Mensaje de Salida] El mensaje fue enviado por ti mismo desde WhatsApp. No se genera auto-respuesta infinita.`);
       }
+    } catch (err) {
+      console.error('❌ Error procesando mensaje en upsert:', err);
     }
   });
 
