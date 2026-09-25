@@ -1,0 +1,20 @@
+-- Tabla de Prospectos / Leads
+CREATE TABLE IF NOT EXISTS leads (
+    id SERIAL PRIMARY KEY,
+    phone VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) DEFAULT 'Prospecto WhatsApp',
+    status VARCHAR(30) DEFAULT 'NUEVO',
+    budget VARCHAR(50),
+    interest VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tabla de Historial de Mensajes
+CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+    sender VARCHAR(20) NOT NULL, -- 'LEAD' o 'BOT'
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
