@@ -1,4 +1,4 @@
-// Módulo de Conexión a WhatsApp vía Baileys con Agente de IA Conversacional y PostgreSQL
+// Módulo de Conexión a WhatsApp vía Baileys con Agente de IA Conversacional y Filtrado de Logs
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
@@ -6,8 +6,19 @@ const path = require('path');
 const { saveOrGetLead, saveMessage, pool } = require('./db');
 const { generateAIResponse } = require('./ai');
 
+// Silenciar warnings de consola internos de Baileys / Signal
 const logger = pino({ level: 'silent' });
 const authFolder = path.join(__dirname, '../../whatsapp_sessions');
+
+// Ocultar avisos ruidosos de 'Bad MAC' o 'prekey bundle' que son normales en la sincronización de WhatsApp
+const originalConsoleError = console.error;
+console.error = function(...args) {
+  const msg = args.join(' ');
+  if (msg.includes('Bad MAC') || msg.includes('Failed to decrypt') || msg.includes('prekey bundle') || msg.includes('Closing open session')) {
+    return; // Ignorar logs internos de re-encriptado
+  }
+  originalConsoleError.apply(console, args);
+};
 
 /**
  * Extrae de forma segura el texto de cualquier tipo de mensaje de WhatsApp
@@ -85,25 +96,23 @@ async function connectToWhatsApp() {
         connectToWhatsApp();
       }
     } else if (connection === 'open') {
-      console.log('✅ [WhatsApp Engine] ¡CONECTADO CON ÉXITO! Agente de IA Conversacional listo.');
+      console.log('✅ [WhatsApp Engine] ¡CONECTADO CON ÉXITO! Agente de IA Conversacional en línea (Groq Llama 3.3).');
     }
   });
 
   // Escucha y procesado inteligente de mensajes entrantes
   sock.ev.on('messages.upsert', async (m) => {
     try {
-      console.log(`\n🔔 [Evento Upsert Recibido] Tipo: "${m.type}" | Cantidad de Mensajes: ${m.messages.length}`);
-
       for (const msg of m.messages) {
         const from = msg.key.remoteJid;
         const isFromMe = msg.key.fromMe;
         const pushName = msg.pushName || (isFromMe ? 'Tú (Mismo número)' : 'Prospecto WhatsApp');
         const text = extractMessageText(msg);
 
-        console.log(`💬 [Mensaje Recibido] De: ${pushName} (${from}) | Es de mí mismo: ${isFromMe} | Texto: "${text}"`);
+        // Ignorar estados, mensajes sin texto o nulos
+        if (!text || text === 'null' || from === 'status@broadcast') continue;
 
-        // Ignorar estados o mensajes sin texto
-        if (!text || from === 'status@broadcast') continue;
+        console.log(`\n🔔 [Mensaje Recibido] De: ${pushName} (${from}) | Es de mí mismo: ${isFromMe} | Texto: "${text}"`);
 
         if (!isFromMe) {
           console.log(`🚀 [Procesando Agente IA] De: ${pushName} (${from}) -> Guardando en BD...`);
@@ -116,7 +125,7 @@ async function connectToWhatsApp() {
             // 2. Obtener historial previo para darle memoria a la IA
             const history = await getRecentHistory(lead.id);
 
-            // 3. Generar respuesta conversacional del Agente de IA (sin menús rígidos)
+            // 3. Generar respuesta conversacional del Agente de IA con Groq
             const aiReplyText = await generateAIResponse(pushName, text, history);
 
             // 4. Enviar respuesta por WhatsApp
