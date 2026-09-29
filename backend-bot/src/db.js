@@ -1,4 +1,4 @@
-// Modulo de conexion, migraciones y helper DB a PostgreSQL para ARM64
+// Módulo de conexión, migraciones y helper DB a PostgreSQL para ARM64
 const { Pool } = require('pg');
 const path = require('path');
 const fs = require('fs');
@@ -17,22 +17,57 @@ const connectionString = (process.env.DATABASE_URL && !process.env.DATABASE_URL.
 const pool = new Pool({ connectionString });
 
 /**
- * Inicializa las tablas de la Base de Datos si no existen
+ * Inicializa las tablas de la Base de Datos y un negocio por defecto si no existe
  */
 async function initDb() {
   try {
     const schemaPath = path.join(__dirname, 'schema.sql');
     const schemaSql = fs.readFileSync(schemaPath, 'utf8');
     await pool.query(schemaSql);
-    console.log('✅ [PostgreSQL Schema] Tablas (leads, messages) verificadas e inicializadas correctamente.');
+    console.log('✅ [PostgreSQL Schema] Tablas (businesses, leads, messages) inicializadas.');
+    await getOrCreateDefaultBusiness();
   } catch (err) {
     console.error('❌ [PostgreSQL Schema Error] Error al crear tablas:', err.message);
   }
 }
 
 /**
- * Prueba la conexion contra el contenedor Docker de PostgreSQL en la Pi 5
+ * Asegura la existencia de un negocio por defecto
  */
+async function getOrCreateDefaultBusiness() {
+  try {
+    const res = await pool.query('SELECT * FROM businesses ORDER BY id ASC LIMIT 1;');
+    if (res.rows.length > 0) {
+      return res.rows[0];
+    }
+
+    const defaultPrompt = `Eres Sofía, una Asistente Comercial de IA ultra-inteligente, empática y profesional.
+REGLAS:
+1. Sé 100% humana y responde en 2 o 3 frases cortas.
+2. NUNCA uses menús rígidos estilo "marca 1 para X".
+3. Responde a las dudas del usuario basándote en la base de conocimiento y haz preguntas de seguimiento para cualificarlo.`;
+
+    const defaultKB = `SERVICIOS:
+- Asistentes Virtuales 24/7 por WhatsApp.
+- Calificación automática de leads y agendamiento de citas.
+PRECIOS:
+- Setup Fee: $2,500 MXN.
+- Mensualidad: $1,200 MXN.`;
+
+    const insertRes = await pool.query(`
+      INSERT INTO businesses (name, category, system_prompt, knowledge_base)
+      VALUES ($1, $2, $3, $4)
+      RETURNING *;
+    `, ['Agencia WhatsApp IA', 'Inmobiliaria / Servicios', defaultPrompt, defaultKB]);
+
+    console.log('🏢 [Multi-Tenant] Negocio por defecto inicializado:', insertRes.rows[0].name);
+    return insertRes.rows[0];
+  } catch (err) {
+    console.error('❌ Error al inicializar negocio por defecto:', err.message);
+    return null;
+  }
+}
+
 async function testConnection() {
   try {
     const res = await pool.query('SELECT NOW() as current_time, current_database() as db_name;');
@@ -44,19 +79,16 @@ async function testConnection() {
   }
 }
 
-/**
- * Guarda o obtiene un lead en la base de datos a partir de su número de teléfono
- */
-async function saveOrGetLead(phone, name = 'Prospecto WhatsApp') {
+async function saveOrGetLead(phone, name = 'Prospecto WhatsApp', businessId = 1) {
   try {
     const query = `
-      INSERT INTO leads (phone, name) 
-      VALUES ($1, $2)
+      INSERT INTO leads (phone, name, business_id) 
+      VALUES ($1, $2, $3)
       ON CONFLICT (phone) DO UPDATE 
       SET updated_at = CURRENT_TIMESTAMP
       RETURNING *;
     `;
-    const res = await pool.query(query, [phone, name]);
+    const res = await pool.query(query, [phone, name, businessId]);
     return res.rows[0];
   } catch (err) {
     console.error('❌ Error al guardar lead:', err.message);
@@ -64,9 +96,6 @@ async function saveOrGetLead(phone, name = 'Prospecto WhatsApp') {
   }
 }
 
-/**
- * Registra un mensaje en la tabla de historial
- */
 async function saveMessage(leadId, sender, content) {
   try {
     const query = `
@@ -82,4 +111,4 @@ async function saveMessage(leadId, sender, content) {
   }
 }
 
-module.exports = { pool, testConnection, initDb, saveOrGetLead, saveMessage };
+module.exports = { pool, testConnection, initDb, saveOrGetLead, saveMessage, getOrCreateDefaultBusiness };
